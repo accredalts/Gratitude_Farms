@@ -1,0 +1,65 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  # Lets you re-run a deploy from the Actions tab without pushing a commit.
+  workflow_dispatch:
+
+# Required by actions/deploy-pages: it publishes with a short-lived OIDC token
+# rather than a checked-in secret.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deploys race. In-flight runs are allowed to finish so a queued
+# push cannot cancel a deploy half way through publishing.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+        env:
+          # puppeteer is a devDependency of the check scripts only. Nothing in
+          # this job drives a browser, so skip the Chrome download.
+          PUPPETEER_SKIP_DOWNLOAD: 'true'
+
+      - name: Build
+        run: npm run build
+
+      # The site is a single-page app: a visitor landing directly on /about-us
+      # asks for a file that does not exist, and Pages answers with 404.html.
+      # vite.config.js writes that copy; fail loudly if it ever stops.
+      - name: Check the SPA fallback is present
+        run: test -f dist/404.html || (echo "dist/404.html missing — deep links would 404" && exit 1)
+
+      # public/CNAME is what keeps gratitudefarms.co.in pointed at this site.
+      - name: Check the custom domain survived the build
+        run: test -f dist/CNAME || (echo "dist/CNAME missing — custom domain would break" && exit 1)
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
