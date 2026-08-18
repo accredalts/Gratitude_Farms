@@ -26,8 +26,23 @@ const ROUTES = [
   '/privacy-policy',
   '/terms',
   '/admin',
+  '/admin/login',
   '/no-such-page'          // the 404 route still has to render a real page
 ];
+
+// The console sits behind a login page, and what this pass wants to know is
+// whether the console renders — so those routes are opened with the session
+// already held, the way a signed-in visitor's browser holds it. `/admin/login`
+// is left signed out so the gate itself is loaded too. The key is the one
+// src/lib/admin-auth.js writes.
+const SIGNED_IN = new Set(['/admin']);
+const SESSION_KEY = 'gf-admin-session';
+const SESSION_VALUE = 'krushna@sainyakrishi.com';
+
+// A page under this many characters of text has almost certainly failed to
+// render. The login page is a short form and is genuinely this small.
+const MIN_TEXT = 400;
+const MIN_TEXT_BY_ROUTE = { '/admin/login': 120 };
 
 const VIEWPORTS = [
   { name: 'desktop', width: 1440, height: 900 },
@@ -56,6 +71,14 @@ for (const vp of VIEWPORTS) {
     });
 
     try {
+      if (SIGNED_IN.has(route)) {
+        // sessionStorage is per-origin, so the session has to be written from a
+        // page on it before the route under test is asked for.
+        await page.goto(BASE + '/admin/login', { waitUntil: 'domcontentloaded', timeout: 45000 });
+        await page.evaluate(
+          (k, v) => window.sessionStorage.setItem(k, v), SESSION_KEY, SESSION_VALUE);
+      }
+
       await page.goto(BASE + route, { waitUntil: 'networkidle2', timeout: 45000 });
       await new Promise((r) => setTimeout(r, 900));   // let the data chunks settle
 
@@ -83,7 +106,8 @@ for (const vp of VIEWPORTS) {
 
       const flags = [];
       if (info.rootEmpty) flags.push('React rendered nothing');
-      if (info.textLen < 400) flags.push(`only ${info.textLen} chars rendered`);
+      const minText = MIN_TEXT_BY_ROUTE[route] ?? MIN_TEXT;
+      if (info.textLen < minText) flags.push(`only ${info.textLen} chars rendered`);
       if (info.overflow > 2) flags.push(`page scrolls horizontally by ${info.overflow}px`);
       if (info.navH && info.spacerH && Math.abs(info.navH - info.spacerH) > 2) {
         flags.push(`nav ${info.navH}px vs spacer ${info.spacerH}px`);

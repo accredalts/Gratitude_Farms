@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
-import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { LEGACY_ROUTES } from './lib/routes.js';
+import { currentUser, signOut } from './lib/admin-auth.js';
 
 import Home from './pages/Home.jsx';
 import AboutUs from './pages/AboutUs.jsx';
@@ -22,6 +23,7 @@ import Contact from './pages/Contact.jsx';
 import PrivacyPolicy from './pages/PrivacyPolicy.jsx';
 import Terms from './pages/Terms.jsx';
 import AdminDashboard from './pages/AdminDashboard.jsx';
+import AdminLogin from './pages/AdminLogin.jsx';
 import NotFound from './pages/NotFound.jsx';
 
 /**
@@ -64,6 +66,33 @@ function LegacyBlogPost() {
   return <Navigate to={slug ? `/blog/${slug}` : '/blog'} replace />;
 }
 
+/**
+ * The console renders only for a signed-in visitor; everyone else is sent to the
+ * login page, which returns them here once they are through.
+ */
+function RequireAdmin() {
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
+
+  // An account removed while its session was open no longer resolves, which
+  // closes the console behind whoever was using it.
+  const user = currentUser();
+
+  if (!user) {
+    return <Navigate to="/admin/login" replace state={{ from: pathname }} />;
+  }
+
+  return (
+    <AdminDashboard
+      user={user}
+      onSignOut={() => {
+        signOut();
+        navigate('/admin/login', { replace: true });
+      }}
+    />
+  );
+}
+
 function legacyRedirects() {
   return Object.entries(LEGACY_ROUTES)
     .filter(([file]) => file !== 'Blog-Post.dc.html')
@@ -100,7 +129,8 @@ export default function App() {
         <Route path="/contact" element={<Contact />} />
         <Route path="/privacy-policy" element={<PrivacyPolicy />} />
         <Route path="/terms" element={<Terms />} />
-        <Route path="/admin" element={<AdminDashboard />} />
+        <Route path="/admin/login" element={<AdminLogin />} />
+        <Route path="/admin" element={<RequireAdmin />} />
 
         <Route path="/Blog-Post.dc.html" element={<LegacyBlogPost />} />
         {legacyRedirects()}

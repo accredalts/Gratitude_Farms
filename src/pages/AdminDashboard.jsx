@@ -1,6 +1,10 @@
 import { Component, Fragment } from 'react';
 import { A, Hov, Seo } from '../lib/ui.jsx';
 import { css } from '../lib/css.js';
+import {
+  ADMIN_ROLE, MEMBER_ROLE, MIN_PASSWORD,
+  addUser, canManageTeam, listUsers, removeUser, updateUser
+} from '../lib/admin-auth.js';
 
 class AdminDashboard extends Component {
 
@@ -21,6 +25,10 @@ class AdminDashboard extends Component {
       { name: 'S. Balasubramaniam', email: 's.bala@example.com', phone: '+91 90420 66337', interest: 'Farmland Design (Vasudha™)', audience: 'Small Landholders', location: 'Thanjavur, Tamil Nadu', date: 'Jul 8, 2026', status: 'Closed', message: 'I need a design-only engagement for my 6-acre plot — cropping layout and water plan. Do you offer that separately?' }
     ],
     blogs: [],
+    // The people who can sign in. Unlike everything else in this state, this is
+    // a mirror of a real store rather than sample data — src/lib/admin-auth.js
+    // holds it, and every change here is re-read from there.
+    team: listUsers(),
     testimonials: [
       { name: 'Lt. Col. R. Desai (Retd)', role: 'Sainya Krishi Entrepreneur, Tamil Nadu', rating: 5, status: 'Published', quote: 'Gratitude Farms gave me a second innings with the same discipline I knew in the Army. My food-forest plot now feeds my family and my income.' },
       { name: 'Anjali Rao', role: 'Landowner, Karnataka', rating: 5, status: 'Published', quote: 'They turned 12 barren acres into a living farm in under a year. The monthly reporting is transparent and the soil is visibly alive again.' },
@@ -103,7 +111,28 @@ class AdminDashboard extends Component {
     this._t = setTimeout(() => this.setState({ toast: '' }), 2600);
   }
 
-  fieldsFor(section) {
+  fieldsFor(section, editor) {
+    if (section === 'team') {
+      // Editing an existing person never shows their password back — the list
+      // does not carry one — so a blank field means "leave it as it is".
+      const editing = !!editor && editor.idx > -1;
+      return [
+        { key: 'name', label: 'Name', type: 'text' },
+        { key: 'email', label: 'Email Address', type: 'text', hint: 'This is what they sign in with.' },
+        {
+          key: 'password',
+          label: editing ? 'New Password' : 'Password',
+          type: 'password',
+          hint: editing
+            ? 'Leave blank to keep their current password.'
+            : `At least ${MIN_PASSWORD} characters. Tell them what you set — it cannot be read back.`
+        },
+        {
+          key: 'role', label: 'Role', type: 'select', options: [MEMBER_ROLE, ADMIN_ROLE],
+          hint: 'Admins can add and remove people. Members can do everything else.'
+        }
+      ];
+    }
     if (section === 'blogs') return [
       { key: 'title', label: 'Title', type: 'text' },
       { key: 'slug', label: 'URL Slug', type: 'text' },
@@ -178,18 +207,49 @@ class AdminDashboard extends Component {
   }
   openEdit(section, idx) {
     const list = this.state[this.listKey(section)];
-    this.setState({ editor: { section, idx }, form: { ...list[idx] } });
+    const form = { ...list[idx] };
+    if (section === 'team') form.password = '';
+    this.setState({ editor: { section, idx }, form });
   }
   removeItem(section, idx) {
+    if (section === 'team') { this.removeMember(idx); return; }
     const key = this.listKey(section);
     const list = this.state[key].slice();
     const [removed] = list.splice(idx, 1);
     this.setState({ [key]: list });
     this.showToast('Deleted “' + (removed.title || removed.name || removed.question || removed.page) + '”');
   }
+
+  /**
+   * The team section writes through to the account store rather than to this
+   * component's state, so both of these hand the store's own refusal — a
+   * duplicate address, too short a password, the last admin — straight to the
+   * toast, and re-read the list on success.
+   */
+  saveMember(idx) {
+    const form = this.state.form;
+    const existing = idx === -1 ? null : this.state.team[idx];
+    const result = existing ? updateUser(existing.email, form) : addUser(form);
+
+    if (!result.ok) { this.showToast(result.error); return; }
+
+    this.setState({ team: listUsers(), editor: null, form: {} });
+    this.showToast((existing ? 'Saved ' : 'Added ') + String(form.email || '').trim().toLowerCase());
+  }
+  removeMember(idx) {
+    const person = this.state.team[idx];
+    const result = removeUser(person.email);
+
+    if (!result.ok) { this.showToast(result.error); return; }
+
+    this.setState({ team: listUsers() });
+    this.showToast('Removed ' + person.email);
+  }
+
   setField(key, val) { this.setState(s => ({ form: { ...s.form, [key]: val } })); }
   saveEditor() {
     const { section, idx } = this.state.editor;
+    if (section === 'team') { this.saveMember(idx); return; }
     const key = this.listKey(section);
     const list = this.state[key].slice();
     if (idx === -1) list.unshift({ ...this.state.form });
@@ -215,7 +275,13 @@ class AdminDashboard extends Component {
   }
 
   renderVals() {
-    const s = this.state.section;
+    const user = this.props.user || {};
+    const canManage = canManageTeam(user);
+
+    // A member has no team section, so a section they cannot open falls back to
+    // the dashboard rather than rendering an empty page.
+    const s = this.state.section === 'team' && !canManage ? 'dashboard' : this.state.section;
+
     const sections = [
       ['dashboard', 'Dashboard', 'Overview'],
       ['enquiries', 'Contact Enquiries', 'Leads'],
@@ -225,9 +291,10 @@ class AdminDashboard extends Component {
       ['faqs', 'FAQ Manager', 'Content'],
       ['banners', 'Homepage Banners', 'Content'],
       ['seo', 'SEO / AEO / GEO', 'Marketing'],
+      ['team', 'Team & Access', 'System'],
       ['settings', 'Website Settings', 'System']
     ];
-    const navItems = sections.map(([key, label]) => ({
+    const navItems = sections.filter(([key]) => key !== 'team' || canManage).map(([key, label]) => ({
       key, label,
       bg: s === key ? 'rgba(197,160,89,0.16)' : 'transparent',
       color: s === key ? '#e9c176' : '#c5eadf',
@@ -236,13 +303,13 @@ class AdminDashboard extends Component {
     }));
     const meta = Object.fromEntries(sections.map(([k, l, kick]) => [k, { label: l, kicker: kick }]));
 
-    const addable = { blogs: 'New Post', testimonials: 'Add Testimonial', services: 'Add Entry', banners: 'Add Banner', faqs: 'Add FAQ' };
+    const addable = { blogs: 'New Post', testimonials: 'Add Testimonial', services: 'Add Entry', banners: 'Add Banner', faqs: 'Add FAQ', team: 'Add Person' };
     const canAdd = !!addable[s];
 
     const editor = this.state.editor;
     let formFields = [];
     if (editor) {
-      formFields = this.fieldsFor(editor.section).map(f => {
+      formFields = this.fieldsFor(editor.section, editor).map(f => {
         if (f.type === 'heading') return { label: f.label, isHeading: true, isField: false };
         return {
           label: f.label, hint: f.hint || '', isField: true, isHeading: false,
@@ -250,11 +317,12 @@ class AdminDashboard extends Component {
           options: f.options || [], rows: f.rows || 4,
           isText: f.type === 'text' || f.type === 'image', isArea: f.type === 'area',
           isSelect: f.type === 'select', isImage: f.type === 'image',
+          isPassword: f.type === 'password',
           onInput: (e) => this.setField(f.key, e.target.value)
         };
       });
     }
-    const editorTitleMap = { blogs: 'Blog Post', testimonials: 'Testimonial', services: 'Catalogue Entry', banners: 'Banner Slide', faqs: 'FAQ', seo: 'Page SEO' };
+    const editorTitleMap = { blogs: 'Blog Post', testimonials: 'Testimonial', services: 'Catalogue Entry', banners: 'Banner Slide', faqs: 'FAQ', seo: 'Page SEO', team: 'Team Member' };
 
     const st = this.state.settings;
     const txt = (key, label, span) => ({ label, value: st[key], isText: true, span: span || 'auto', onInput: (e) => this.setSetting(key, e.target.value) });
@@ -278,6 +346,7 @@ class AdminDashboard extends Component {
       isDashboard: s === 'dashboard', isEnquiries: s === 'enquiries', isServices: s === 'services',
       isBlogs: s === 'blogs', isTestimonials: s === 'testimonials', isBanners: s === 'banners',
       isFaqs: s === 'faqs', isSeo: s === 'seo', isSettings: s === 'settings',
+      isTeam: s === 'team',
 
       stats: [
         { label: 'Open Enquiries', value: String(this.state.enquiries.filter(e => e.status !== 'Closed').length) },
@@ -339,7 +408,27 @@ class AdminDashboard extends Component {
         onEdit: () => this.openEdit('seo', i)
       })),
 
+      team: this.state.team.map((p, i) => ({
+        ...p,
+        roleBg: p.role === ADMIN_ROLE ? '#e8f3ee' : '#e0ecf5',
+        roleColor: p.role === ADMIN_ROLE ? '#2D5A27' : '#1f4a6b',
+        isYou: p.email === user.email,
+        // The founder account lives in the site's code, so the console can show
+        // it but not change it. Nobody removes the account they are using.
+        canEdit: !p.isOwner,
+        canRemove: !p.isOwner && p.email !== user.email,
+        onEdit: () => this.openEdit('team', i),
+        onDelete: () => this.removeItem('team', i)
+      })),
+
       settingGroups,
+
+      // Who is signed in, and the way back out — both handed down by the route
+      // guard in App.jsx, which owns the session.
+      adminName: user.name || user.email || 'Administrator',
+      adminEmail: user.email || '',
+      adminRole: user.isOwner ? 'Founder · Admin' : (user.role || ''),
+      onSignOut: this.props.onSignOut,
 
       detailOpen: !!d,
       detail: d ? { ...d, telHref: 'tel:' + (d.phone || '').replace(/\s/g, ''), mailHref: 'mailto:' + d.email, onStatus: (e) => this.setEnquiryStatus(d.idx, e.target.value) } : {},
@@ -384,15 +473,21 @@ class AdminDashboard extends Component {
               <div style={css("font-size:12.5px;color:#c5eadf;")}>
                 {"Logged in as"}
               </div>
-              <div style={css("font-size:14px;font-weight:700;color:#FAFAF9;margin-top:4px;")}>
-                {"Ayushi Sharma"}
+              <div style={css("font-size:14px;font-weight:700;color:#FAFAF9;margin-top:4px;overflow-wrap:anywhere;")}>
+                {$v.adminName}
               </div>
-              <div style={css("font-size:11.5px;color:#83a69c;")}>
-                {"Co-Founder & Director"}
+              <div style={css("font-size:11.5px;color:#83a69c;overflow-wrap:anywhere;")}>
+                {$v.adminEmail}
+              </div>
+              <div style={css("font-size:11px;color:#e9c176;margin-top:3px;font-weight:600;")}>
+                {$v.adminRole}
               </div>
               <A href="/" style={css("display:block;margin-top:12px;text-decoration:none;color:#e9c176;font-size:12.5px;font-weight:600;")}>
                 {"↩ Back to website"}
               </A>
+              <button onClick={$v.onSignOut} style={css("display:block;margin-top:10px;background:none;border:none;padding:0;text-align:left;color:#c5eadf;font-size:12.5px;font-weight:600;cursor:pointer;font-family:'Hanken Grotesk',sans-serif;")}>
+                {"Sign out"}
+              </button>
             </div>
           </aside>
           <main style={css("flex:1;min-width:0;")}>
@@ -773,6 +868,88 @@ class AdminDashboard extends Component {
                 </div>
                 </>
               ) : null}
+              {($v.isTeam) ? (
+                <>
+                <p style={css("color:#717976;font-size:13.5px;margin:0 0 18px;max-width:720px;")}>
+                  {"Everyone who can sign in to this console. An "}
+                  <strong>
+                    {"Admin"}
+                  </strong>
+                  {" can add and remove people; a "}
+                  <strong>
+                    {"Member"}
+                  </strong>
+                  {" can do everything else but never sees this section. Use “Add Person” to create an account, and tell them the password you set — it cannot be read back here."}
+                </p>
+                <div style={css("background:#fdf6e8;border:1px solid #ecd9ac;border-radius:12px;padding:14px 18px;margin:0 0 24px;max-width:720px;")}>
+                  <div style={css("font-size:12.5px;font-weight:700;color:#775a19;margin-bottom:4px;")}>
+                    {"Accounts are saved in this browser"}
+                  </div>
+                  <div style={css("font-size:12.5px;color:#775a19;line-height:1.6;")}>
+                    {"The site has no server, so a person you add here can sign in on this computer only, and clearing this browser’s site data removes them. The founder account works everywhere because it ships with the site."}
+                  </div>
+                </div>
+                <div style={css("background:#FAFAF9;border:1px solid #e5e2dd;border-radius:16px;overflow:hidden;max-width:940px;")}>
+                  {($v.team || []).map((p, pIndex) => (
+                    <Fragment key={pIndex}>
+                      <div style={css("display:flex;justify-content:space-between;align-items:center;gap:16px;padding:16px 24px;border-bottom:1px solid #F0EDE8;flex-wrap:wrap;")}>
+                        <div style={css("flex:1;min-width:180px;")}>
+                          <div style={css("font-size:14px;font-weight:700;color:#1A3C34;")}>
+                            {p.name}
+                            {(p.isYou) ? (
+                              <>
+                              <span style={css("font-size:10.5px;font-weight:700;color:#C5A059;margin-left:8px;letter-spacing:0.04em;")}>
+                                {"YOU"}
+                              </span>
+                              </>
+                            ) : null}
+                          </div>
+                          <div style={css("font-size:12.5px;color:#717976;overflow-wrap:anywhere;")}>
+                            {p.email}
+                          </div>
+                          <div style={css("font-family:'JetBrains Mono',monospace;font-size:10px;color:#9aa19d;text-transform:uppercase;letter-spacing:0.06em;margin-top:6px;")}>
+                            {"Added: "}{p.added}
+                          </div>
+                        </div>
+                        <span style={css(`font-size:11.5px;font-weight:700;padding:5px 12px;border-radius:999px;background:${p.roleBg};color:${p.roleColor};flex-shrink:0;`)}>
+                          {p.role}
+                        </span>
+                        <div style={css("display:flex;gap:8px;flex-shrink:0;align-items:center;")}>
+                          {(p.canEdit) ? (
+                            <>
+                            <button onClick={p.onEdit} style={css("background:#F5F2ED;border:1px solid #e5e2dd;border-radius:8px;padding:7px 14px;font-size:12.5px;font-weight:700;color:#1A3C34;cursor:pointer;")}>
+                              {"Edit"}
+                            </button>
+                            </>
+                          ) : null}
+                          {(p.canRemove) ? (
+                            <>
+                            <button onClick={p.onDelete} style={css("background:#fff;border:1px solid #e6c9c4;border-radius:8px;padding:7px 12px;font-size:12.5px;font-weight:700;color:#a5493c;cursor:pointer;")}>
+                              {"Remove"}
+                            </button>
+                            </>
+                          ) : null}
+                          {(!p.canEdit) ? (
+                            <>
+                            <span style={css("font-size:11.5px;color:#9aa19d;")}>
+                              {"Set in code"}
+                            </span>
+                            </>
+                          ) : null}
+                          {(p.canEdit && !p.canRemove) ? (
+                            <>
+                            <span style={css("font-size:11.5px;color:#9aa19d;")}>
+                              {"Signed in"}
+                            </span>
+                            </>
+                          ) : null}
+                        </div>
+                      </div>
+                    </Fragment>
+                  ))}
+                </div>
+                </>
+              ) : null}
               {($v.isSettings) ? (
                 <>
                 <div style={css("display:flex;flex-direction:column;gap:20px;max-width:720px;")}>
@@ -980,6 +1157,11 @@ class AdminDashboard extends Component {
                         {(f.isText) ? (
                           <>
                           <input value={f.value} onInput={f.onInput} className="adm-input" />
+                          </>
+                        ) : null}
+                        {(f.isPassword) ? (
+                          <>
+                          <input type="password" value={f.value} onInput={f.onInput} className="adm-input" autoComplete="new-password" />
                           </>
                         ) : null}
                         {(f.isArea) ? (
